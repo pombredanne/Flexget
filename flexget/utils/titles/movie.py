@@ -87,6 +87,12 @@ class MovieParser(TitleParser):
             if part.lower() in self.propers:
                 self.proper_count += 1
                 cut = True
+            # check for language:
+                lang = TitleParser.language_from_name(part)
+                if not lang and len(part) > 2 and len(part) <= 3:
+                    lang = TitleParser.language_from_code(part)
+                if lang:
+                    cut = True
             # update cut position
             if cut and parts.index(part) < cut_part:
                 cut_part = part_pos
