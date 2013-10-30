@@ -28,7 +28,7 @@ class TitleParser(object):
 
     sounds = ['AC3', 'DD5.1', 'DTS']
         
-    __languages_name = {'VF', pycountry.languages.get(alpha2='fr')}    
+    __languages_name = {'VF': pycountry.languages.get(name='French')}    
     __languages_code = {}
     __countries_code = {}
     __countries_name = {}
