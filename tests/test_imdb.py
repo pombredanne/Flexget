@@ -97,7 +97,7 @@ class TestImdb(FlexGetBase):
               imdb_url: http://www.imdb.com/title/tt0103639/
             imdb:
               reject_mpaa_ratings:
-              - NC-17
+              - R
     """
 
     @attr(online=True)
@@ -182,7 +182,7 @@ class TestImdb(FlexGetBase):
     def test_genre(self):
         self.execute_task('genre')
         matrix = (self.task.find_entry(imdb_name='The Matrix')['imdb_genres'])
-        assert matrix == ['action', 'adventure', 'sci-fi'], \
+        assert matrix == ['action', 'sci-fi'], \
             'Could not find genres for The Matrix'
         toe = (self.task.find_entry(imdb_name='Terms of Endearment')['imdb_genres'])
         assert toe == ['comedy', 'drama'], \
@@ -222,7 +222,7 @@ class TestImdb(FlexGetBase):
                                                     aladdin['imdb_mpaa_rating'])
         assert aladdin.accepted, 'Non R rated movie should have been accepted'
         saw = self.task.find_entry(imdb_name='Saw')
-        assert saw['imdb_mpaa_rating'] == 'NC-17', 'Didn\'t get right rating for Saw'
+        assert saw['imdb_mpaa_rating'] == 'R', 'Didn\'t get right rating for Saw'
         assert not saw.accepted, 'R rated movie should not have been accepted'
 
 

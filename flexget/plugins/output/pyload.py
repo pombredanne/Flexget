@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import unicode_literals, division, absolute_import
-from urllib import quote
-from requests.exceptions import RequestException
 from logging import getLogger
+from urllib import quote
+
+from requests.exceptions import RequestException
+
+from flexget import plugin, validator
+from flexget.event import event
 from flexget.utils import json, requests
-from flexget.plugin import register_plugin, PluginError
-from flexget import validator
 
 log = getLogger('pyload')
 
@@ -23,6 +25,7 @@ class PluginPyLoad(object):
         username: my_username
         password: my_password
         folder: desired_folder
+        package: desired_package_name (jinja2 supported)
         hoster:
           - YoutubeCom
         parse_url: no
@@ -52,9 +55,6 @@ class PluginPyLoad(object):
     DEFAULT_PREFERRED_HOSTER_ONLY = False
     DEFAULT_HANDLE_NO_URL_AS_FAILURE = False
 
-    def __init__(self):
-        self.session = None
-
     def validator(self):
         """Return config validator"""
         root = validator.factory()
@@ -64,16 +64,16 @@ class PluginPyLoad(object):
         advanced.accept('text', key='username')
         advanced.accept('text', key='password')
         advanced.accept('text', key='folder')
+        advanced.accept('text', key='package')
         advanced.accept('boolean', key='queue')
         advanced.accept('boolean', key='parse_url')
         advanced.accept('boolean', key='multiple_hoster')
         advanced.accept('list', key='hoster').accept('text')
         advanced.accept('boolean', key='preferred_hoster_only')
         advanced.accept('boolean', key='handle_no_url_as_failure')
+        advanced.accept('boolean', key='enabled')
         return root
 
-    def on_process_start(self, task, config):
-        self.session = None
 
     def on_task_output(self, task, config):
         if not config.get('enabled', True):
@@ -87,17 +87,16 @@ class PluginPyLoad(object):
         """Adds accepted entries"""
 
         try:
-            self.check_login(task, config)
+            session = self.get_session(config)
         except IOError:
-            raise PluginError('pyLoad not reachable', log)
-        except PluginError:
+            raise plugin.PluginError('pyLoad not reachable', log)
+        except plugin.PluginError:
             raise
         except Exception as e:
-            raise PluginError('Unknown error: %s' % str(e), log)
+            raise plugin.PluginError('Unknown error: %s' % str(e), log)
 
         api = config.get('api', self.DEFAULT_API)
         hoster = config.get('hoster', self.DEFAULT_HOSTER)
-        folder = config.get('folder', self.DEFAULT_FOLDER)
 
         for entry in task.accepted:
             # bunch of urls now going to check
@@ -108,7 +107,7 @@ class PluginPyLoad(object):
 
             log.debug("Parsing url %s" % url)
 
-            result = query_api(api, "parseURLs", {"html": content, "url": url, "session": self.session})
+            result = query_api(api, "parseURLs", {"html": content, "url": url, "session": session})
 
             # parsed { plugins: [urls] }
             parsed = result.json()
@@ -128,7 +127,7 @@ class PluginPyLoad(object):
                     if name != "BasePlugin":
                         urls.extend(purls)
 
-            if task.manager.options.test:
+            if task.options.test:
                 log.info('Would add `%s` to pyload' % urls)
                 continue
 
@@ -144,42 +143,52 @@ class PluginPyLoad(object):
 
             try:
                 dest = 1 if config.get('queue', self.DEFAULT_QUEUE) else 0  # Destination.Queue = 1
-                post = {'name': "'%s'" % entry['title'].encode("ascii", "ignore"),
+
+                # Use the title of the entry, if no naming schema for the package is defined.
+                name = config.get('package', entry['title'])
+
+                # If name has jinja template, render it
+                try:
+                    name = entry.render(name)
+                except RenderError as e:
+                    name = entry['title']
+                    log.error('Error rendering jinja event: %s' % e)
+
+                post = {'name': "'%s'" % name.encode("ascii", "ignore"),
                         'links': str(urls),
                         'dest': dest,
-                        'session': self.session}
+                        'session': session}
 
                 pid = query_api(api, "addPackage", post).text
                 log.debug('added package pid: %s' % pid)
 
+                # Set Folder
+                folder = config.get('folder', self.DEFAULT_FOLDER)
+                folder = entry.get('path', folder)
                 if folder:
+                    # If folder has jinja template, render it
+                    try:
+                        folder = entry.render(folder)
+                    except RenderError as e:
+                        folder = self.DEFAULT_FOLDER
+                        log.error('Error rendering jinja event: %s' % e)
                     # set folder with api
-                    data = {'folder': folder}
-                    query_api(api, "setPackageData", {'pid': pid, 'data': data, 'session': self.session})
+                    data = json.dumps({'folder': folder})
+                    query_api(api, "setPackageData", {'pid': pid, 'data': data, 'session': session})
 
             except Exception as e:
                 entry.fail(str(e))
 
-    def check_login(self, task, config):
+    def get_session(self, config):
         url = config.get('api', self.DEFAULT_API)
 
-        if not self.session:
-            # Login
-            post = {'username': config['username'], 'password': config['password']}
-            result = query_api(url, "login", post)
-            response = result.json()
-            if not response:
-                raise PluginError('Login failed', log)
-            self.session = response.replace('"', '')
-        else:
-            try:
-                query_api(url, 'getServerVersion', {'session': self.session})
-            except HTTPError as e:
-                if e.response.status_code == 403:  # Forbidden
-                    self.session = None
-                    return self.check_login(task, config)
-                else:
-                    raise PluginError('HTTP Error %s' % e, log)
+        # Login
+        post = {'username': config['username'], 'password': config['password']}
+        result = query_api(url, "login", post)
+        response = result.json()
+        if not response:
+            raise plugin.PluginError('Login failed', log)
+        return response.replace('"', '')
 
 
 def query_api(url, method, post=None):
@@ -192,7 +201,10 @@ def query_api(url, method, post=None):
         return response
     except RequestException as e:
         if e.response.status_code == 500:
-            raise PluginError('Internal API Error: <%s> <%s> <%s>' % (method, url, post), log)
+            raise plugin.PluginError('Internal API Error: <%s> <%s> <%s>' % (method, url, post), log)
         raise
 
-register_plugin(PluginPyLoad, 'pyload', api_ver=2)
+
+@event('plugin.register')
+def register_plugin():
+    plugin.register(PluginPyLoad, 'pyload', api_ver=2)

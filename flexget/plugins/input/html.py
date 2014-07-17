@@ -6,12 +6,14 @@ import zlib
 import re
 from jinja2 import Template
 
+from flexget import plugin
+from flexget.event import event
 from flexget.entry import Entry
-from flexget.plugin import register_plugin, internet, PluginError
 from flexget.utils.soup import get_soup
 from flexget.utils.cached_input import cached
 
 log = logging.getLogger('html')
+
 
 class InputHtml(object):
     """
@@ -69,7 +71,7 @@ class InputHtml(object):
         return config
 
     @cached('html')
-    @internet(log)
+    @plugin.internet(log)
     def on_task_input(self, task, config):
         config = self.build_config(config)
 
@@ -77,9 +79,10 @@ class InputHtml(object):
         if config.get('username') and config.get('password'):
             log.debug('Basic auth enabled. User: %s Password: %s' % (config['username'], config['password']))
             auth = (config['username'], config['password'])
-            
+
         increment = config.get('increment')
-        if increment:            
+        base_url = config['url']
+        if increment:
             entries = None
             if not isinstance(increment, dict):
                 increment = {}
@@ -90,14 +93,14 @@ class InputHtml(object):
             entries_count = increment.get('entries_count', 500)
             stop_when_empty = increment.get('stop_when_empty', True)
             increment_name = increment.get('name', 'i')
-            
+
             template_url = Template(base_url)
             template_dump = None
             if 'dump' in config:
                 dump_name = config['dump']
                 if dump_name:
                     template_dump = Template(dump_name)
-            
+
             while to is None or current < to:
                 render_ctx = {increment_name: current}
                 url = template_url.render(**render_ctx)
@@ -113,20 +116,20 @@ class InputHtml(object):
                     break
                 if entries_count and len(entries) >= entries_count:
                     break
-                current = current + step
+                current += step
             return entries
         else:
             return self._request_url(task, config, base_url, auth)
-        
-    def _request_url(self, task, config, url, auth, dump_name = None):
-        log.debug('InputPlugin html requesting url %s' % url)
+
+    def _request_url(self, task, config, url, auth, dump_name=None):
+        log.verbose('Requesting: %s' % url)
         page = task.requests.get(url, auth=auth)
-        log.debug('InputPlugin html response: %s %s' % (page.status_code, page.reason))            
+        log.verbose('Response: %s (%s)' % (page.status_code, page.reason))
         soup = get_soup(page.text)
 
         # dump received content into a file
         if dump_name:
-            log.info('Dumping %s into %s' % (url, dump_name))
+            log.verbose('Dumping: %s' % dump_name)
             data = soup.prettify()
             with open(dump_name, 'w') as f:
                 f.write(data)
@@ -231,10 +234,10 @@ class InputHtml(object):
                     continue
                 log.debug('title from link: %s' % title)
             else:
-                raise PluginError('Unknown title_from value %s' % title_from)
+                raise plugin.PluginError('Unknown title_from value %s' % title_from)
 
             if not title:
-                log.debug('title could not be determined for %s' % log_link)
+                log.warning('title could not be determined for link %s' % log_link)
                 continue
 
             # strip unicode white spaces
@@ -265,4 +268,6 @@ class InputHtml(object):
         return queue
 
 
-register_plugin(InputHtml, 'html', api_ver=2)
+@event('plugin.register')
+def register_plugin():
+    plugin.register(InputHtml, 'html', api_ver=2)
